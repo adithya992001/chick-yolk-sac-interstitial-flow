@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
-mesh_original_vasculature_corrected_scale/*.h5
-sharp_Stokes_3D/
-3D_Stokes_perivascular_coordinate/
-3D_darcy_flow_baseline/
-Darcy_flow_parametric_sensitivity_updated_Rp_0.001_to_1000/
+meshes/*.h5
+blood_flow/
+perivascular_coordinate/
+interstitial_flow/
+conductivity_sweep/

@@ -8,23 +8,17 @@ from mpi4py import MPI
 import dolfin as df
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
-# --- Inputs you already have ---
-# mesh_v: vascular volume mesh
-# p_v   : Function on mesh_v (CG1) = Stokes pressure
-# mesh_i: interstitial volume mesh
-# facet_tags_i: MeshFunction('size_t', mesh_i, mesh_i.topology().dim()-1) marking the Darcy boundary with id=BOUND_ID
 interface_id = 103
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
-STUDY_DIR = os.path.abspath(os.environ.get("E7_RUN_DIR", CODE_DIR))
-MESH_DIR = os.path.join(CODE_DIR, "mesh_original_vasculature_corrected_scale")
-VASCULAR_MESH_H5 = os.path.join(MESH_DIR, "vasculature_decimated_255K_0,0001.h5")
-INTERSTITIUM_MESH_H5 = os.path.join(MESH_DIR, "interstitium_0,00008.h5")
-STOKES_PRESSURE_XDMF = os.path.join(STUDY_DIR, "sharp_Stokes_3D", "stokes_pressure.xdmf")
-OUTPUT_DIR = os.path.join(STUDY_DIR, "3D_Stokes_perivascular_coordinate")
+RUN_DIR = os.path.abspath(os.environ.get("FLOW_RUN_DIR", CODE_DIR))
+MESH_DIR = os.path.join(CODE_DIR, "meshes")
+VASCULAR_MESH_H5 = os.path.join(MESH_DIR, "vascular_mesh.h5")
+INTERSTITIUM_MESH_H5 = os.path.join(MESH_DIR, "interstitial_mesh.h5")
+STOKES_PRESSURE_XDMF = os.path.join(RUN_DIR, "blood_flow", "stokes_pressure.xdmf")
+OUTPUT_DIR = os.path.join(RUN_DIR, "perivascular_coordinate")
 
 df.parameters["mesh_partitioner"] = "ParMETIS"
-#df.parameters["form_compiler"]["representation"] = "quadrature"  # default is "uflacs"
 df.parameters["form_compiler"]["cpp_optimize"]  = True
 
 mesh_v = Mesh()
@@ -52,7 +46,7 @@ def main():
     file.parameters["flush_output"] = True
     file.parameters["functions_share_mesh"] = True
     V_v = FunctionSpace(mesh_v, "CG", 1)
-    # Calculate a dummy Stokes pressure for demonstration
+    # Load the vascular pressure checkpoint.
     p_v = Function(V_v)
 
     stokes_pressure_file = XDMFFile(comm, STOKES_PRESSURE_XDMF)
@@ -88,29 +82,25 @@ def main():
     # --- 4) Build KD-tree on every rank ---
     tree = cKDTree(X_src)
     V = FunctionSpace(mesh_i, "CG", 1)     # Darcy pressure space
-    
 
-    # placeholder
+
     # --- Find the Darcy boundary DOFs ONCE ---
-    # Make a dummy BC to get the dof indices on the marked boundary
+    # Use a zero-valued boundary condition to identify boundary degrees of freedom.
     gdim = mesh_i.geometry().dim()
-    # --- Build authoritative list of BC DOFs (GLOBAL indices) ---
+    # Identify local boundary degrees of freedom.
     bc_probe = DirichletBC(V, Constant(0.0), facets_i, interface_id, method='topological')
-    # dm = V.dofmap()
-    # local_owned_dim = dm.global_dimension()  # number of OWNED dofs on this rank
-    # print(f"Rank {rank}: has {local_owned_dim} owned DOFs out of {local_owned_dim} local DOFs")
 
     # Local boundary dofs returned by BC (may include ghosts)
     bdofs_local_all = np.array(list(bc_probe.get_boundary_values().keys()), dtype=np.int64)
 
     # Keep only OWNED local indices
-    
+
     # Now it’s safe to index coordinates and fill the vector
     gdim = mesh_i.geometry().dim()
     Xdof_owned = V.tabulate_dof_coordinates().reshape((-1, gdim))   # shape = (local_owned_dim, gdim)
     bdofs_local_owned = bdofs_local_all[bdofs_local_all < len(Xdof_owned)]
 
-    Xq = Xdof_owned[bdofs_local_owned]  
+    Xq = Xdof_owned[bdofs_local_owned]
 
     # --- Batch kNN on this rank (tree is identical on all ranks) ---
     k = 3
@@ -142,13 +132,13 @@ def main():
     darcy_file = df.XDMFFile(comm, os.path.join(base_folder, "darcy_pressure.xdmf"))
     darcy_file.parameters["flush_output"] = True
     darcy_file.parameters["functions_share_mesh"] = True
-    
+
 
 
 
 
     p_darcy = Function(V)
-    pd = TrialFunction(V); 
+    pd = TrialFunction(V);
     qd = TestFunction(V)
     # Darcy equations
     # Parameters
@@ -159,7 +149,7 @@ def main():
     k = 5.2E-14/ (tau**2) # permeability in m²
     Lp = 2.7E-9 * (dj/70)**3 # Transvascular permeability from Starlings law in m/(s Pa)
     ds = Measure('ds', domain=mesh_i, subdomain_data=facets_i)
-    a = inner(k/mu * grad(pd), grad(qd)) * dx  
+    a = inner(k/mu * grad(pd), grad(qd)) * dx
     L = df.Constant(0)* qd * dx
     A = assemble(a)
     b = assemble(L)
@@ -178,9 +168,6 @@ def main():
     output_file = XDMFFile(comm, os.path.join(base_folder, "darcy_pressure_output.xdmf"))
     output_file.write_checkpoint(p_darcy, "p_darcy", 0.0, XDMFFile.Encoding.HDF5, True)
 
-    # # Save Darcy velocity as readable XDMF file
-    # output_file = XDMFFile(comm, os.path.join(base_folder, "darcy_velocity.xdmf"))
-    # output_file.write_checkpoint(u_darcy, "u_darcy", 0.0, XDMFFile.Encoding.HDF5, True)
 
 if __name__ == '__main__':
     # Log time

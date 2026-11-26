@@ -5,7 +5,6 @@ from scipy.spatial import cKDTree
 import csv
 import os
 import sys
-from pathlib import Path
 from mpi4py import MPI
 
 from fenics_functions import *
@@ -14,39 +13,46 @@ comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
-STUDY_DIR = os.path.abspath(os.environ.get("E7_RUN_DIR", CODE_DIR))
+RUN_DIR = os.path.abspath(os.environ.get("FLOW_RUN_DIR", CODE_DIR))
 
 interface_id = 103
-MESH_V_FILE = os.path.join(CODE_DIR, "mesh_original_vasculature_corrected_scale/vasculature_decimated_255K_0,0001.h5")
-MESH_I_FILE = os.path.join(CODE_DIR, "mesh_original_vasculature_corrected_scale/interstitium_0,00008.h5")
-STOKES_P_FILE = os.path.join(STUDY_DIR, "sharp_Stokes_3D", "stokes_pressure.xdmf")
+MESH_V_FILE = os.path.join(CODE_DIR, "meshes/vascular_mesh.h5")
+MESH_I_FILE = os.path.join(CODE_DIR, "meshes/interstitial_mesh.h5")
+STOKES_P_FILE = os.path.join(RUN_DIR, "blood_flow", "stokes_pressure.xdmf")
 
 mu = 1.2e-3
 k0_ref = 5.2e-14
 Lp_ref = 2.7e-9
 tw = 3.0e-6
-Rp_ref = k0_ref / (mu * Lp_ref * tw)
-
-n_Rp_values = 40
-Rp_min = 1.0e-3 * Rp_ref
-Rp_max = 1.0e3 * Rp_ref
-Rp_target_list = np.logspace(np.log10(Rp_min), np.log10(Rp_max), n_Rp_values)
+Rc_ref = k0_ref / (mu * Lp_ref * tw)
 
 x0_cut = 0.004771099337748345
 switch_scale = 10000.0
 
-ROOT_OUT = os.path.join(STUDY_DIR, "Darcy_flow_parametric_sensitivity_updated_Rp_0.001_to_1000")
+ROOT_OUT = os.path.join(RUN_DIR, "conductivity_sweep")
 MASTER_CSV = os.path.join(ROOT_OUT, "sweep_summary.csv")
 PROVENANCE_DIR = os.path.join(ROOT_OUT, "provenance")
-PROVENANCE_SCRIPT = "./darcy_flow_parametric_sensitivity_updated_Rp_0p001_to_1000.py"
-WORKFLOW_VERSION = "rp_only_updated_0p001_to_1000_v1"
+PROVENANCE_SCRIPT = "reference_cases.py"
+WORKFLOW_VERSION = "conductivity_sweep_v1"
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Run the conductivity-ratio sweep.")
-    parser.add_argument("--case-indices", nargs="+", type=int, choices=range(n_Rp_values),
-                        help="Run selected original indices (0-39); default: all 40.")
-    args = parser.parse_args()
+REFERENCE_CASES = [
+    {
+        "case_name": "baseline",
+        "case_kind": "baseline",
+        "reference_label": "baseline",
+        "is_baseline": "1",
+        "Rc_index": "-1",
+        "Rc_factor_from_ref": 1.0,
+    },
+    {
+        "case_name": "local_scale",
+        "case_kind": "local_scale",
+        "reference_label": "local_scale",
+        "is_baseline": "0",
+        "Rc_index": "-2",
+        "Rc_factor_from_ref": 1.0e-3,
+    },
+]
 
 df.parameters["mesh_partitioner"] = "ParMETIS"
 df.parameters["form_compiler"]["cpp_optimize"] = True
@@ -92,14 +98,14 @@ def ensure_master_csv():
     os.makedirs(ROOT_OUT, exist_ok=True)
     fieldnames = [
         "case_folder",
-        "Rp_target",
-        "Rp_index",
+        "Rc_target",
+        "Rc_index",
         "Lp_base_m_per_s_Pa",
         "k_base_m2",
         "case_kind",
         "is_baseline",
-        "special_label",
-        "Rp_factor_from_ref",
+        "reference_label",
+        "Rc_factor_from_ref",
         "provenance_script",
         "workflow_version",
     ]
@@ -235,17 +241,14 @@ class LpExpr(UserExpression):
         return ()
 
 
-def main(case_indices=None):
+def main():
     if rank == 0:
         os.makedirs(ROOT_OUT, exist_ok=True)
         os.makedirs(PROVENANCE_DIR, exist_ok=True)
-        start_logging(ROOT_OUT)
         save_current_script(PROVENANCE_DIR)
-        print(f"[info] Rp_ref = {Rp_ref:.16e}")
-        print(f"[info] Rp_min = {Rp_min:.16e}")
-        print(f"[info] Rp_max = {Rp_max:.16e}")
-        print(f"[info] n_Rp_values = {n_Rp_values}")
-        print(f"[info] workflow_version = {WORKFLOW_VERSION}")
+        print(f"[info] Rc_ref = {Rc_ref:.16e}")
+        for cfg in REFERENCE_CASES:
+            print(f"[info] reference case {cfg['reference_label']}: Rc/Rc_ref = {cfg['Rc_factor_from_ref']:.6e}")
     comm.Barrier()
 
     ensure_master_csv()
@@ -257,25 +260,16 @@ def main(case_indices=None):
     stokes_pressure_file.read_checkpoint(p_v, "p_v", -1)
 
     V, g = build_interface_stokes_bc_g(mesh_v, p_v, mesh_i, facets_i, interface_id)
-
-    g_out = df.XDMFFile(comm, os.path.join(ROOT_OUT, "g_boundary.xdmf"))
-    g_out.parameters["flush_output"] = True
-    g_out.parameters["functions_share_mesh"] = True
-    g.rename("g_interpolated", "Interpolated Darcy BC from Stokes")
-    g_out.write(g, 0.0)
-    g_out.close()
-
     W = VectorFunctionSpace(mesh_i, "CG", 1)
     ds = Measure("ds", domain=mesh_i, subdomain_data=facets_i)
     pd = TrialFunction(V)
     qd = TestFunction(V)
     k_base = k0_ref
 
-    for i_Rp, Rp_target in enumerate(Rp_target_list):
-        if case_indices is not None and i_Rp not in case_indices:
-            continue
-        Lp_base = k_base / (mu * tw * Rp_target)
-        case_folder = os.path.join(ROOT_OUT, f"Rp_idx={i_Rp:02d}_Rp={Rp_target:.6e}")
+    for cfg in REFERENCE_CASES:
+        Rc_target = Rc_ref * float(cfg["Rc_factor_from_ref"])
+        Lp_base = k_base / (mu * tw * Rc_target)
+        case_folder = os.path.join(ROOT_OUT, cfg["case_name"])
 
         if rank == 0:
             os.makedirs(case_folder, exist_ok=True)
@@ -295,13 +289,7 @@ def main(case_indices=None):
         A = assemble(a)
         b = assemble(L)
         solve(A, p_darcy.vector(), b, "gmres", "amg")
-
-        u_darcy = project(
-            -(k_expr / mu) * grad(p_darcy),
-            W,
-            solver_type="gmres",
-            preconditioner_type="amg",
-        )
+        u_darcy = project(-(k_expr / mu) * grad(p_darcy), W, solver_type="gmres", preconditioner_type="amg")
 
         sol = df.XDMFFile(comm, os.path.join(case_folder, "darcy_solution.xdmf"))
         sol.parameters["flush_output"] = True
@@ -327,32 +315,29 @@ def main(case_indices=None):
         lines = [
             f"workflow_version = {WORKFLOW_VERSION}",
             f"provenance_script = {PROVENANCE_SCRIPT}",
-            f"Rp_ref = {Rp_ref:.16e}",
-            f"Rp_min = {Rp_min:.16e}",
-            f"Rp_max = {Rp_max:.16e}",
-            f"Rp_index = {i_Rp}",
-            f"Rp_target = {Rp_target:.16e}",
-            f"Rp_factor_from_ref = {Rp_target / Rp_ref:.16e}",
+            f"case_kind = {cfg['case_kind']}",
+            f"reference_label = {cfg['reference_label']}",
+            f"is_baseline = {cfg['is_baseline']}",
+            f"Rc_ref = {Rc_ref:.16e}",
+            f"Rc_target = {Rc_target:.16e}",
+            f"Rc_factor_from_ref = {float(cfg['Rc_factor_from_ref']):.16e}",
             f"mu [kg/(m*s)] = {mu:.16e}",
             f"tw [m] = {tw:.16e}",
             f"k_base [m^2] = {k_base:.16e}",
             f"Lp_base [m/(s Pa)] = {Lp_base:.16e}",
-            "case_kind = logspace",
-            "is_baseline = 0",
-            "special_label = ",
         ]
         write_case_log(case_folder, lines)
 
         row = {
             "case_folder": case_folder,
-            "Rp_target": f"{Rp_target:.16e}",
-            "Rp_index": str(i_Rp),
+            "Rc_target": f"{Rc_target:.16e}",
+            "Rc_index": cfg["Rc_index"],
             "Lp_base_m_per_s_Pa": f"{Lp_base:.16e}",
             "k_base_m2": f"{k_base:.16e}",
-            "case_kind": "logspace",
-            "is_baseline": "0",
-            "special_label": "",
-            "Rp_factor_from_ref": f"{Rp_target / Rp_ref:.16e}",
+            "case_kind": cfg["case_kind"],
+            "is_baseline": cfg["is_baseline"],
+            "reference_label": cfg["reference_label"],
+            "Rc_factor_from_ref": f"{float(cfg['Rc_factor_from_ref']):.16e}",
             "provenance_script": PROVENANCE_SCRIPT,
             "workflow_version": WORKFLOW_VERSION,
         }
@@ -361,15 +346,12 @@ def main(case_indices=None):
         comm.Barrier()
 
         if rank == 0:
-            print(f"[done] Rp_idx={i_Rp:02d}, Rp={Rp_target:.6e} -> {case_folder}")
-
-    if rank == 0:
-        print(f"[summary] wrote master CSV: {MASTER_CSV}")
+            print(f"[done] {cfg['reference_label']} (Rc/Rc_ref={float(cfg['Rc_factor_from_ref']):.6e}) -> {case_folder}")
 
 
 if __name__ == "__main__":
     t0 = MPI.Wtime()
-    main(args.case_indices)
+    main()
     t1 = MPI.Wtime()
     if rank == 0:
         print(f"Execution time: {t1 - t0:.2f} s")

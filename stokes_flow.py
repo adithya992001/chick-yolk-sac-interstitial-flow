@@ -12,25 +12,23 @@ import dolfin as df
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 df.parameters["mesh_partitioner"] = "ParMETIS"
-#df.parameters["form_compiler"]["representation"] = "quadrature"  # default is "uflacs"
 df.parameters["form_compiler"]["cpp_optimize"]  = True
-#df.parameters["allow_extrapolation"] = True
 if rank != 0:
     sys.stdout = open(os.devnull, "w")
     sys.stderr = open(os.devnull, "w")
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
-STUDY_DIR = os.path.abspath(os.environ.get("E7_RUN_DIR", CODE_DIR))
-MESH_DIR = os.path.join(CODE_DIR, "mesh_original_vasculature_corrected_scale")
-VASCULAR_MESH_H5 = os.path.join(MESH_DIR, "vasculature_decimated_255K_0,0001.h5")
+RUN_DIR = os.path.abspath(os.environ.get("FLOW_RUN_DIR", CODE_DIR))
+MESH_DIR = os.path.join(CODE_DIR, "meshes")
+VASCULAR_MESH_H5 = os.path.join(MESH_DIR, "vascular_mesh.h5")
 
-# Old paper thresholds scaled by 0.008e-3 / 0.0151e-3.
+# Inlet/outlet cuts and the reference pressure point, in metres.
 INLET_OUTLET_X_CUT = 0.004771099337748345
 INLET_OUTLET_Y_SPLIT = 0.0074172185430463585
 PRESSURE_POINT = (0.004982781456953643, 0.00857086092715232, -1.7049006622516557e-05)
 
 def main():
-    base_folder = os.path.join(STUDY_DIR, "sharp_Stokes_3D")
+    base_folder = os.path.join(RUN_DIR, "blood_flow")
     if rank == 0:
         os.makedirs(base_folder, exist_ok=True)
 
@@ -64,32 +62,30 @@ def main():
     (v, q) = TestFunctions(W)
     class Walls(SubDomain):
         def inside(self, x, on_boundary):
-            # same geometry as your domain, but explicitly exclude inlet geometry
             tol = 1e-8
-            return on_boundary #and not (x[0]> (0.009405 - 1E-7))
+            return on_boundary
 
     walls = Walls(); walls.mark(facets, 116)
 
     class Inlet(SubDomain):
         def inside(self, x, on_boundary):
             return on_boundary and x[1] < INLET_OUTLET_Y_SPLIT and x[0] > (INLET_OUTLET_X_CUT - 1E-7)
-    inlet = Inlet()                 # your complementary SubDomain class
+    inlet = Inlet()
     inlet.mark(facets, 117)
     class Outlet(SubDomain):
         def inside(self, x, on_boundary):
             return on_boundary and x[1] > INLET_OUTLET_Y_SPLIT and x[0] > (INLET_OUTLET_X_CUT - 1E-7)
-    outlet = Outlet()               # your complementary SubDomain class
+    outlet = Outlet()
     outlet.mark(facets, 118)
 
     f = Constant((0.0, 0.0, 0.0))  # body force (optional, set to zero)
     def eps(w):   return sym(grad(w))
-    a = (inner(2*nu*eps(u), eps(v)) + div(u)*q/rho - div(v)*p/rho ) * dx #+ epsilon*inner(p, q) 
+    a = (inner(2*nu*eps(u), eps(v)) + div(u)*q/rho - div(v)*p/rho ) * dx
 
-    # Traction: t_in = +100 Pa * n on inlet (tag 102)
+    # Apply pressure traction at the inlet (tag 117).
     n = FacetNormal(mesh)
     t_in = Constant(65.32/rho)                # [Pa]
-    F = -dot(t_in*n, v) * ds(117)          # outlet (103) is zero traction by default
-    #F = Constant(0.0)*q*dx
+    F = -dot(t_in*n, v) * ds(117)          # Outlet (tag 118) has zero traction.
 
     #Adding GLS stabilization
     h = CellDiameter(mesh)
@@ -111,7 +107,6 @@ def main():
             print("Found pressure point on rank", comm.rank)
         return check
 
-    #bc_p1 = DirichletBC(W.sub(1), Constant(69.32), facets, 117)
     bc_p0 = DirichletBC(W.sub(1), Constant(0), pressure_point, method="pointwise")
 
     inlet_velocity = Constant((-1E-3, 0.0, 0.0))
@@ -122,9 +117,7 @@ def main():
     A = assemble(a)
     b = assemble(F)
     bc_walls.apply(A, b)
-    
-    #bc_p0.apply(A, b)
-    #bc_p1.apply(A, b)
+
     PETScOptions.set("pc_type", "asm")
     PETScOptions.set("pc_asm_overlap", 1) # number of layers of overlap
     PETScOptions.set("sub_pc_type", "lu")
@@ -135,13 +128,11 @@ def main():
     PETScOptions.set("ksp_converged_reason")
     PETScOptions.set("monitor_true_residual")
     PETScOptions.set("ksp_type", "gmres")
-    #ksp.setFromOptions()
     solver = PETScKrylovSolver()
     solver.set_operator(A)
     solver.set_from_options()
     # Solve
     w = Function(W)
-    #solver.solve(w.vector(), b)
 
     solve(A, w.vector(), b, "mumps")
     print("Solved.")
@@ -165,7 +156,7 @@ def main():
 
     # Save the pressure solution
 
-    
+
     save_file = df.XDMFFile(comm, os.path.join(base_folder, "stokes_pressure.xdmf"))
     save_file.write_checkpoint(p_sol, "p_v", 0.0, df.XDMFFile.Encoding.HDF5, True)
 
@@ -189,7 +180,7 @@ def main():
 
         R = num/den if den > 0.0 else 0.0
 
-  
+
         if comm.rank == 0:
             with open(logfile, "a") as f:
                 f.write(f"{tag}: num=int(uz^2)={num:.16e}, den=int(|u|^2)={den:.16e}, R_S_z={R:.16e}\n")

@@ -15,12 +15,12 @@ The solvers require:
 - mpi4py, petsc4py, and an MPI runtime.
 - MPI-enabled HDF5 and PETSc, with ParMETIS, MUMPS, and AMG support.
 
-Place the two required meshes in `mesh_original_vasculature_corrected_scale/`:
+Place the two required meshes in `meshes/`:
 
-- `vasculature_decimated_255K_0,0001.h5` — vascular volume mesh.
-- `interstitium_0,00008.h5` — interstitial volume mesh and boundary tags.
+- `vascular_mesh.h5` — vascular volume mesh.
+- `interstitial_mesh.h5` — interstitial volume mesh and boundary tags.
 
-Mesh files will be provided as GitHub Release assets. File sizes and checksums are listed in [manifest.json](mesh_original_vasculature_corrected_scale/manifest.json).
+Mesh files will be provided as GitHub Release assets. File sizes and checksums are listed in [manifest.json](meshes/manifest.json).
 
 ## Run
 
@@ -34,8 +34,8 @@ export MKL_NUM_THREADS=1
 mpirun -np "$NPROCS" python stokes_flow.py
 mpirun -np "$NPROCS" python perivascular_coordinate.py
 mpirun -np "$NPROCS" python darcy_flow.py
-mpirun -np "$NPROCS" python darcy_flow_parametric_sensitivity_updated_Rp_0p001_to_1000.py
-mpirun -np "$NPROCS" python darcy_flow_parametric_sensitivity_updated_Rp_0p001_to_1000_special_cases.py
+mpirun -np "$NPROCS" python conductivity_sweep.py
+mpirun -np "$NPROCS" python reference_cases.py
 ```
 
 ## Paper results

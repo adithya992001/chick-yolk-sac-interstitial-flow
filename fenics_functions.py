@@ -7,8 +7,7 @@ import __main__
 import resource
 def save_current_script(base_folder: str):
     """
-    Copy the user’s main script into base_folder/current_script_backup.py
-    so you have an exact snapshot of what was run.
+    Copy the running script to base_folder/<script_name>.backup.
     """
     os.makedirs(base_folder, exist_ok=True)
 
@@ -49,10 +48,10 @@ def start_logging(base_folder: str):
         def flush(self):
             for s in self.streams:
                 s.flush()
-    
-    # keep originals around if you ever want to restore:
+
+    # Preserve the original output streams.
     _original_stdout = sys.stdout
-    _original_stderr = sys.stderr    
+    _original_stderr = sys.stderr
     os.makedirs(base_folder, exist_ok=True)
     log_path = os.path.join(base_folder, "print_output.txt")
     log_file = open(log_path, "w")

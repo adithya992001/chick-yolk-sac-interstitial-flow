@@ -17,10 +17,10 @@ The solvers require:
 
 Place the two required meshes in `meshes/`:
 
-- `vascular_mesh.h5` — vascular volume mesh.
-- `interstitial_mesh.h5` — interstitial volume mesh and boundary tags.
+- [vascular_mesh.h5](https://github.com/adithya992001/chick-yolk-sac-interstitial-flow/releases/download/v1.0.0/vascular_mesh.h5) — vascular volume mesh.
+- [interstitial_mesh.h5](https://github.com/adithya992001/chick-yolk-sac-interstitial-flow/releases/download/v1.0.0/interstitial_mesh.h5) — interstitial volume mesh and boundary tags.
 
-Mesh files will be provided as GitHub Release assets. File sizes and checksums are listed in [manifest.json](meshes/manifest.json).
+The mesh files are available in the [v1.0.0 release](https://github.com/adithya992001/chick-yolk-sac-interstitial-flow/releases/tag/v1.0.0). File sizes and checksums are listed in [manifest.json](meshes/manifest.json).
 
 ## Run
 
